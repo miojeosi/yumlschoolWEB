@@ -1,4 +1,5 @@
 import datetime
+import io
 from venv import logger
 from django.shortcuts import redirect, render
 from django.http import HttpResponse, JsonResponse, HttpResponseBadRequest, HttpResponseServerError
@@ -37,7 +38,6 @@ from reportlab.pdfgen import canvas
 from django.http import HttpResponse
 
 
-API_BASE_URL = 'https://192.168.0.107:7154/api'  
 
 
 from reportlab.lib.pagesizes import letter
@@ -66,6 +66,12 @@ import os
 from django.http import HttpResponse
 from django.core.files.storage import FileSystemStorage
 from django.contrib import messages
+
+
+API_BASE_URL = 'https://192.168.0.107:7154/api'  
+
+
+
 
 # Вспомогательная функция для выполнения API-запросов
 def make_api_request(endpoint, method='get', data=None, params=None):
@@ -168,6 +174,17 @@ def import_groups_from_json(request):
 
 
 
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from django.http import HttpResponse
+import requests
+import io
+from datetime import datetime
+
 def export_students_performance(request, practical_work_id):
     practical_work_url = f'{API_BASE_URL}/PracticalWorks/{practical_work_id}'
     response_from_api = requests.get(practical_work_url, verify=False)
@@ -200,79 +217,104 @@ def export_students_performance(request, practical_work_id):
 
     completed_works = response_completed_works.json()
 
-    # Create the Word document
-    document = Document()
+    # Создаем PDF документ
+    response = HttpResponse(content_type='application/pdf')
+    response['Content-Disposition'] = 'attachment; filename="Успеваемость студентов.pdf"'
+    buffer = io.BytesIO()
+    p = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
 
-    # Title page
-    document.add_heading('YumlSchool', 0)
-    document.add_paragraph(f'"{practical_work["namePracticalWork"]}"')
-    document.add_paragraph(f'Предмет: {subject_name}')
-    document.add_paragraph(f'Группа: {group_name}')
-    document.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    # Настройка шрифта
+    pdfmetrics.registerFont(TTFont('Arial', 'Arial.ttf'))  # Убедитесь, что шрифт доступен
+    p.setFont("Arial", 16)
 
-    # List of students and their grades
-    document.add_heading('Список студентов и их оценки', level=1)
-    table = document.add_table(rows=1, cols=2)
-    table.style = 'Table Grid'
-    hdr_cells = table.rows[0].cells
-    hdr_cells[0].text = 'ФИО'
-    hdr_cells[1].text = 'Оценка'
+    # Заголовок
+    p.drawString(100, height - 50, 'YumlSchool')
+    p.setFont("Arial", 12)
+    p.drawString(100, height - 70, f'"{practical_work["namePracticalWork"]}"')
+    p.drawString(100, height - 90, f'Предмет: {subject_name}')
+    p.drawString(100, height - 110, f'Группа: {group_name}')
 
-    student_works = {}
+    # Список студентов и их оценки в виде таблицы
+    p.setFont("Arial", 14)
+    p.drawString(100, height - 140, 'Список студентов и их оценки')
+
+    # Рисуем таблицу
+    table_start_y = height - 160
+    row_height = 20
+    col_widths = [3 * inch, 1 * inch]  # Ширина столбцов
+
+    # Заголовки таблицы
+    p.setFont("Arial", 12)
+    p.setFillColor(colors.grey)
+    p.rect(100, table_start_y, sum(col_widths), row_height, stroke=1, fill=1)
+    p.setFillColor(colors.black)
+    p.drawString(100 + 5, table_start_y + 5, 'ФИО студента')
+    p.drawString(100 + col_widths[0], table_start_y + 5, 'Оценка')
+
+    # Рисуем строки таблицы
+    p.setFillColor(colors.white)
+    table_start_y -= row_height
+
     for work in completed_works:
         user_id = work['userId']
         user_url = f'{API_BASE_URL}/Users/{user_id}'
         response_user = requests.get(user_url, verify=False)
         user = response_user.json() if response_user.status_code == 200 else {}
-
+        
         full_name = f"{user.get('firstName', 'Не указано')} {user.get('secondName', 'Не указано')} {user.get('middleName', 'Не указано')}"
-        if user_id not in student_works:
-            student_works[user_id] = {
-                'full_name': full_name,
-                'latest_grade': None
-            }
+        grade = str(work.get('grade', 'Не сдано'))
 
-        # Находим последнюю попытку студента
-        if 'attemptCount' in work:
-            attempt_count = int(work['attemptCount'])
-            if attempt_count > (student_works[user_id]['latest_grade'].get('attemptCount', 0) if student_works[user_id]['latest_grade'] else 0):
-                student_works[user_id]['latest_grade'] = work
+        # Рисуем строки
+        p.setFillColor(colors.white)
+        p.rect(100, table_start_y, sum(col_widths), row_height, stroke=1, fill=1)
+        p.setFillColor(colors.black)
+        p.drawString(100 + 5, table_start_y + 5, full_name)
+        p.drawString(100 + col_widths[0], table_start_y + 5, grade)
 
-    for student_id, student_info in student_works.items():
-        row_cells = table.add_row().cells
-        row_cells[0].text = student_info['full_name']
-        if student_info['latest_grade']:
-            row_cells[1].text = str(student_info['latest_grade']['grade'])
-        else:
-            row_cells[1].text = 'Не сдано'
+        table_start_y -= row_height
 
-    # Signature of the teacher
-    document.add_paragraph()
-    row = document.add_paragraph()
-    row.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    p = row.add_run('Подпись преподавателя  _____________')
-    p = row.add_run('\n')
-    p = row.add_run(f'«{datetime.now().day}» {datetime.now().strftime("%B")} {datetime.now().year} года')
+    # Получаем текущую дату
+    current_date = datetime.now()
+    day = current_date.day
+    month = current_date.strftime("%B")  # Получаем название месяца на английском
+    year = current_date.year
 
-    row = document.add_paragraph()
-    row.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    # Словарь для перевода названий месяцев на русский
+    months_translation = {
+        "January": "января",
+        "February": "февраля",
+        "March": "марта",
+        "April": "апреля",
+        "May": "мая",
+        "June": "июня",
+        "July": "июля",
+        "August": "августа",
+        "September": "сентября",
+        "October": "октября",
+        "November": "ноября",
+        "December": "декабря"
+    }
+
+    # Переводим месяц на русский
+    month_russian = months_translation.get(month, month)
+
+    # Подпись преподавателя
+    p.drawString(100, table_start_y - 20, 'Подпись преподавателя  _____________')
+    p.drawString(100, table_start_y - 40, f'«{day}» {month_russian} {year} года')
+
+    # Имя преподавателя
     teacher_url = f'{API_BASE_URL}/Users/{practical_work["userId"]}'
     response_teacher = requests.get(teacher_url, verify=False)
     teacher = response_teacher.json() if response_teacher.status_code == 200 else {}
     full_teacher_name = f"{teacher.get('firstName', 'Не указано')} {teacher.get('secondName', 'Не указано')} {teacher.get('middleName', 'Не указано')}"
-    p = row.add_run(f'Проверил преподаватель {full_teacher_name}')
+    p.drawString(100, table_start_y - 60, f'Проверил преподаватель {full_teacher_name}')
 
-    # Save the document
-    response = HttpResponse(
-        content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    )
-    response['Content-Disposition'] = 'attachment; filename="Успеваемость студентов.docx"'  # Изменено название файла
-    document.save(response)
+    p.showPage()
+    p.save()
+    buffer.seek(0)
+    response.write(buffer.read())
     return response
-
-
-
-
 
 
 
@@ -630,6 +672,7 @@ import requests
 from django.shortcuts import render, redirect
 
 
+
 def register(request):
     if request.method == 'POST':
         request.session.flush()
@@ -762,6 +805,10 @@ def group_crud(request):
         groups = []
 
     return render(request, 'AdminPanel/GroupCRUD.html', {'groups': groups})
+
+
+
+
 
 def create_group(request):
     if request.method == 'POST':
