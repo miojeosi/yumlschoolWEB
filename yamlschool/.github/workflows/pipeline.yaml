@@ -3,12 +3,12 @@ name: Code Style Check
 on:
   push:
     branches:
-      -'**'
+      - vetka
 
 
   pull_repost:
     branches:
-      - '**'
+      - vetka
 
 
 jobs:
